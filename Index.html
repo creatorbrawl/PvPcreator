@@ -1,0 +1,365 @@
+В современных браузерах (Chrome, Safari) доступ к камере и гироскопу жестко заблокирован на обычных http:// сайтах на уровне самого браузера (это защита от слежки). Обойти это просто строчкой в коде нельзя — браузер выдаст ошибку navigator.mediaDevices is undefined.
+Но есть 3 простых способа запустить эту программу вообще без настройки HTTPS, сертификатов и хостингов. Кроме того, ниже я добавил в код режим работы без камеры (рисование взглядом + тапом), который запустится даже просто при открытии файла index.html из папки телефона!
+Способ 1. Скрытая настройка в Chrome на телефоне (Самый быстрый)
+Если вы запускаете сайт с компьютера по Wi-Fi (например, по адресу [http://192.168.1.5:8080](http://192.168.1.5:8080)), можно за 10 секунд разрешить браузеру на телефоне включать камеру и VR без HTTPS:
+ * Откройте браузер Chrome на телефоне.
+ * Введите в адресную строку: chrome://flags/#unsafely-treat-insecure-origin-as-secure
+ * В текстовое поле впишите адрес вашего сервера (например, [http://192.168.1.5:8080](http://192.168.1.5:8080)).
+ * Переключите статус с Disabled на Enabled и нажмите кнопку Relaunch (Перезапустить) внизу.
+ * Всё! Теперь для этого адреса камера, трекинг рук и VR работают по обычному http://.
+Способ 2. Запуск через адрес localhost
+По стандарту безопасности адрес http://localhost (или [http://127.0.0.1](http://127.0.0.1)) считается браузером полностью безопасным — на нем HTTPS не требуется вообще:
+ * Прямо на телефоне: Скачайте на Android бесплатное приложение Simple HTTP Server или KSWeb, выберите папку с вашим файлом index.html и откройте в браузере телефона http://localhost:8080. Камера заработает сразу!
+ * Через USB-кабель от ПК: Подключите телефон к ПК, откройте в Chrome на компьютере chrome://inspect/#devices, включите Port forwarding (например, порт 8080 на localhost:8080) и откройте http://localhost:8080 на телефоне.
+Способ 3. Обновленный код (Работает даже без сервера и без камеры!)
+Я переписал код так, чтобы он не ломался без HTTPS. Теперь в нем есть два режима:
+ * С трекингом рук (если есть камера): работает через localhost или флаг из Способа 1.
+ * Автономный режим (если открыли просто как файл file:// или по http://): если браузер заблокировал камеру, автоматически включается 3D-лазерная кисть по центру взгляда. Вы крутите головой или водите пальцем по экрану, а при зажатии экрана (или кнопки на VR-очках) в воздухе рисуется объемная 3D-модель!
+Сохраните этот код как index.html и просто откройте на телефоне:
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>AirSketch VR — Работает без HTTPS</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  
+  <!-- 3D и VR движок A-Frame -->
+  <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
+  
+  <!-- Нейросеть MediaPipe (подгрузится, если камера доступна) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body style="margin: 0; overflow: hidden; background: #000; font-family: sans-serif; user-select: none; -webkit-user-select: none;">
+
+  <video id="webcam" autoplay playsinline style="display: none;"></video>
+
+  <!-- Панель управления -->
+  <div id="ui" style="position: absolute; top: 12px; left: 12px; z-index: 999; background: rgba(15, 23, 42, 0.9); color: white; padding: 14px; border-radius: 12px; max-width: 300px; border: 1px solid #334155;">
+    <h3 style="margin: 0 0 6px 0; color: #38bdf8; font-size: 16px;">🎨 AirSketch VR (No-HTTPS)</h3>
+    <p id="status" style="margin: 0 0 10px 0; font-size: 13px; color: #cbd5e1;">
+      Выберите режим: камера (трекинг рук) или рисование взглядом/экраном (работает везде без HTTPS!).
+    </p>
+    
+    <div style="display: flex; gap: 6px; flex-direction: column;">
+      <button id="gazeModeBtn" style="width: 100%; padding: 10px; background: #3b82f6; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 13px; cursor: pointer;">
+        👁️ Играть БЕЗ камеры (Взгляд + Тап)
+      </button>
+      <button id="camModeBtn" style="width: 100%; padding: 10px; background: #22c55e; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 13px; cursor: pointer;">
+        ✋ Включить трекер рук (Камера)
+      </button>
+    </div>
+  </div>
+
+  <!-- Большая прозрачная кнопка рисования для режима без камеры -->
+  <div id="touchDrawZone" style="display: none; position: fixed; bottom: 20px; left: 20px; z-index: 998; padding: 18px 28px; background: rgba(56, 189, 248, 0.35); border: 2px solid #38bdf8; color: white; border-radius: 50px; font-weight: bold; font-size: 15px; touch-action: none;">
+    ЗАЖМИ, ЧТОБЫ РИСОВАТЬ ✏️
+  </div>
+
+  <!-- 3D VR Сцена -->
+  <a-scene vr-mode-ui="enabled: true">
+    <a-sky color="#090d16"></a-sky>
+    <a-plane position="0 0 -3" rotation="-90 0 0" width="20" height="20" color="#1e293b" material="wireframe: true"></a-plane>
+    
+    <a-light type="ambient" color="#64748b"></a-light>
+    <a-light type="directional" intensity="0.9" position="2 4 1"></a-light>
+
+    <!-- Холст для 3D-рисунков -->
+    <a-entity id="drawingCanvas"></a-entity>
+
+    <!-- ПАЛИТРА ЦВЕТОВ (Слева) -->
+    <a-entity position="-1.0 1.5 -2.2" rotation="0 25 0">
+      <a-text value="ЦВЕТА" position="0 0.5 0" align="center" width="3" color="#94a3b8"></a-text>
+      <a-sphere class="color-swatch" data-color="#ef4444" position="0 0.3 0" radius="0.09" color="#ef4444"></a-sphere>
+      <a-sphere class="color-swatch" data-color="#f59e0b" position="0 0.08 0" radius="0.09" color="#f59e0b"></a-sphere>
+      <a-sphere class="color-swatch" data-color="#22c55e" position="0 -0.14 0" radius="0.09" color="#22c55e"></a-sphere>
+      <a-sphere class="color-swatch" data-color="#38bdf8" position="0 -0.36 0" radius="0.09" color="#38bdf8"></a-sphere>
+      <a-sphere class="color-swatch" data-color="#a855f7" position="0 -0.58 0" radius="0.09" color="#a855f7"></a-sphere>
+    </a-entity>
+
+    <!-- ИНСТРУМЕНТЫ (Справа) -->
+    <a-entity position="1.0 1.5 -2.2" rotation="0 -25 0">
+      <a-text value="МЕНЮ" position="0 0.45 0" align="center" width="3" color="#94a3b8"></a-text>
+      <a-box id="btnSize" position="0 0.15 0" width="0.45" height="0.2" depth="0.1" color="#334155">
+        <a-text id="sizeLabel" value="Кисть: Средняя" position="0 0 0.06" align="center" width="2.2" color="#ffffff"></a-text>
+      </a-box>
+      <a-box id="btnClear" position="0 -0.25 0" width="0.45" height="0.2" depth="0.1" color="#991b1b">
+        <a-text value="СТЕРЕТЬ ВСЁ" position="0 0 0.06" align="center" width="2.2" color="#ffffff"></a-text>
+      </a-box>
+    </a-entity>
+
+    <!-- 3D-КИСТЬ ДЛЯ КАМЕРЫ (Свободная в воздухе) -->
+    <a-entity id="virtualBrush" visible="false">
+      <a-sphere id="brushTip" radius="0.035" color="#38bdf8" material="emissive: #38bdf8; emissiveIntensity: 0.4"></a-sphere>
+      <a-ring id="pinchRing" radius-inner="0.05" radius-outer="0.06" color="#ffffff" material="side: double"></a-ring>
+    </a-entity>
+
+    <!-- КАМЕРА ИГРОКА + КИСТЬ ДЛЯ РЕЖИМА БЕЗ КАМЕРЫ -->
+    <a-entity id="playerCamera" camera look-controls position="0 1.6 0">
+      <!-- Эта точка висит в 1.8 метра перед глазами, когда мы играем без камеры -->
+      <a-entity id="gazeBrush" position="0 0 -1.8" visible="false">
+        <a-sphere id="gazeTip" radius="0.03" color="#38bdf8" material="emissive: #38bdf8; emissiveIntensity: 0.5"></a-sphere>
+        <a-ring id="gazeRing" radius-inner="0.045" radius-outer="0.055" color="#ffffff" material="side: double"></a-ring>
+      </a-entity>
+    </a-entity>
+  </a-scene>
+
+  <script>
+    const statusText = document.getElementById('status');
+    const gazeModeBtn = document.getElementById('gazeModeBtn');
+    const camModeBtn = document.getElementById('camModeBtn');
+    const touchDrawZone = document.getElementById('touchDrawZone');
+    const uiBox = document.getElementById('ui');
+
+    const drawingCanvas = document.getElementById('drawingCanvas');
+    const virtualBrush = document.getElementById('virtualBrush');
+    const brushTip = document.getElementById('brushTip');
+    const pinchRing = document.getElementById('pinchRing');
+
+    const gazeBrush = document.getElementById('gazeBrush');
+    const gazeTip = document.getElementById('gazeTip');
+    const gazeRing = document.getElementById('gazeRing');
+
+    const swatches = document.querySelectorAll('.color-swatch');
+    const btnSize = document.getElementById('btnSize');
+    const sizeLabel = document.getElementById('sizeLabel');
+    const btnClear = document.getElementById('btnClear');
+
+    let currentColor = '#38bdf8';
+    const brushSizes = [
+      { radius: 0.015, name: 'Тонкая' },
+      { radius: 0.035, name: 'Средняя' },
+      { radius: 0.075, name: 'Толстая' }
+    ];
+    let currentSizeIndex = 1;
+    let currentRadius = brushSizes[currentSizeIndex].radius;
+
+    let isDrawing = false;
+    let lastDrawPoint = null;
+    let smoothedPos = { x: 0, y: 1.5, z: -2 };
+    let buttonCooldown = false;
+    let activeMode = 'none'; // 'gaze' или 'camera'
+    let isTouchPressed = false;
+
+    // ==========================================
+    // РЕЖИМ 1: РАБОТА БЕЗ HTTPS И БЕЗ КАМЕРЫ (ВЗГЛЯД + ТАП)
+    // ==========================================
+    function enableGazeMode(customMsg) {
+      activeMode = 'gaze';
+      virtualBrush.setAttribute('visible', 'false');
+      gazeBrush.setAttribute('visible', 'true');
+      touchDrawZone.style.display = 'block';
+      uiBox.style.opacity = '0.45';
+      statusText.innerText = customMsg || "Режим без камеры активен! Крутите головой/экраном и зажимайте синюю кнопку внизу (или два пальца), чтобы рисовать в 3D.";
+
+      // Запускаем цикл отслеживания точки перед глазами
+      requestAnimationFrame(gazeLoop);
+    }
+
+    function gazeLoop() {
+      if (activeMode !== 'gaze') return;
+
+      // Получаем мировые 3D-координаты прицела перед глазами
+      const worldPos = new THREE.Vector3();
+      gazeBrush.object3D.getWorldPosition(worldPos);
+      const currentPt = { x: worldPos.x, y: worldPos.y, z: worldPos.z };
+
+      // Проверяем наведение на палитру и кнопки
+      checkUIInteraction(currentPt);
+
+      if (isTouchPressed) {
+        gazeRing.setAttribute('color', '#22c55e');
+        gazeRing.setAttribute('scale', '0.7 0.7 0.7');
+        drawIn3DSpace(currentPt);
+      } else {
+        gazeRing.setAttribute('color', '#ffffff');
+        gazeRing.setAttribute('scale', '1 1 1');
+        isDrawing = false;
+        lastDrawPoint = null;
+      }
+
+      requestAnimationFrame(gazeLoop);
+    }
+
+    // События нажатия на кнопку рисования (или зажатия 2 пальцев на любом месте экрана в VR-очках)
+    touchDrawZone.addEventListener('pointerdown', (e) => { e.preventDefault(); isTouchPressed = true; });
+    window.addEventListener('pointerup', () => { isTouchPressed = false; });
+    window.addEventListener('touchstart', (e) => {
+      if (e.touches.length >= 2) isTouchPressed = true; // Удобно в VR-шлеме: коснуться двумя пальцами
+    });
+    window.addEventListener('touchend', (e) => {
+      if (e.touches.length === 0) isTouchPressed = false;
+    });
+
+    gazeModeBtn.addEventListener('click', () => enableGazeMode());
+
+    // ==========================================
+    // РЕЖИМ 2: ТРЕКИНГ РУК ЧЕРЕЗ КАМЕРУ (MediaPipe)
+    // ==========================================
+    camModeBtn.addEventListener('click', async () => {
+      // Проверяем, разрешил ли браузер камеру без HTTPS
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        enableGazeMode("⚠️ Браузер скрыл камеру (так как нет HTTPS или флага chrome://flags). Автоматически включен режим 3D-рисования взглядом и кнопкой!");
+        return;
+      }
+
+      try {
+        statusText.innerText = "Запуск камеры и ИИ...";
+        const videoElement = document.getElementById('webcam');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: 640, height: 480 }
+        });
+        videoElement.srcObject = stream;
+
+        activeMode = 'camera';
+        gazeBrush.setAttribute('visible', 'false');
+        touchDrawZone.style.display = 'none';
+        uiBox.style.opacity = '0.4';
+
+        const hands = new Hands({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 0, minDetectionConfidence: 0.55, minTrackingConfidence: 0.55 });
+        hands.onResults(onHandResults);
+
+        const mpCamera = new Camera(videoElement, {
+          onFrame: async () => { await hands.send({ image: videoElement }); },
+          width: 640, height: 480
+        });
+        mpCamera.start();
+        statusText.innerText = "Камера активна! Сведите большой и указательный пальцы (щипок), чтобы рисовать.";
+      } catch (err) {
+        enableGazeMode("⚠️ Камера недоступна (" + err.name + "). Включен режим 3D-рисования взглядом!");
+      }
+    });
+
+    function onHandResults(results) {
+      if (activeMode !== 'camera') return;
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        virtualBrush.setAttribute('visible', 'true');
+        const lm = results.multiHandLandmarks[0];
+        const indexTip = lm[8];
+        const thumbTip = lm[4];
+
+        const rawX = (indexTip.x + thumbTip.x) / 2;
+        const rawY = (indexTip.y + thumbTip.y) / 2;
+        const rawZ = (indexTip.z + thumbTip.z) / 2;
+
+        const targetX = -(0.5 - rawX) * 3.2;
+        const targetY = (0.5 - rawY) * 2.5 + 1.4;
+        const targetZ = -2.0 + (rawZ * 2.2);
+
+        smoothedPos.x += (targetX - smoothedPos.x) * 0.45;
+        smoothedPos.y += (targetY - smoothedPos.y) * 0.45;
+        smoothedPos.z += (targetZ - smoothedPos.z) * 0.45;
+
+        virtualBrush.object3D.position.set(smoothedPos.x, smoothedPos.y, smoothedPos.z);
+        checkUIInteraction(smoothedPos);
+
+        const pinchDist = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y, indexTip.z - thumbTip.z);
+        if (pinchDist < 0.065) {
+          pinchRing.setAttribute('color', '#22c55e');
+          drawIn3DSpace({ ...smoothedPos });
+        } else {
+          pinchRing.setAttribute('color', '#ffffff');
+          isDrawing = false;
+          lastDrawPoint = null;
+        }
+      } else {
+        virtualBrush.setAttribute('visible', 'false');
+        isDrawing = false;
+        lastDrawPoint = null;
+      }
+    }
+
+    // ==========================================
+    // ГЕНЕРАЦИЯ 3D-ЛИНИЙ И ВЗАИМОДЕЙСТВИЕ С МЕНЮ
+    // ==========================================
+    function drawIn3DSpace(currentPoint) {
+      if (!isDrawing || !lastDrawPoint) {
+        isDrawing = true;
+        lastDrawPoint = currentPoint;
+        createSphereJoint(currentPoint);
+        return;
+      }
+      const distance = Math.hypot(
+        currentPoint.x - lastDrawPoint.x,
+        currentPoint.y - lastDrawPoint.y,
+        currentPoint.z - lastDrawPoint.z
+      );
+      if (distance > 0.022) {
+        create3DTubeSegment(lastDrawPoint, currentPoint, distance);
+        createSphereJoint(currentPoint);
+        lastDrawPoint = currentPoint;
+      }
+    }
+
+    function create3DTubeSegment(p1, p2, length) {
+      const cylinder = document.createElement('a-cylinder');
+      cylinder.setAttribute('position', `${(p1.x + p2.x) / 2} ${(p1.y + p2.y) / 2} ${(p1.z + p2.z) / 2}`);
+      cylinder.setAttribute('radius', currentRadius);
+      cylinder.setAttribute('height', length);
+      cylinder.setAttribute('color', currentColor);
+
+      const dir = new THREE.Vector3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z).normalize();
+      const quaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      const euler = new THREE.Euler().setFromQuaternion(quaternion, 'YXZ');
+
+      cylinder.setAttribute('rotation', {
+        x: THREE.MathUtils.radToDeg(euler.x),
+        y: THREE.MathUtils.radToDeg(euler.y),
+        z: THREE.MathUtils.radToDeg(euler.z)
+      });
+      drawingCanvas.appendChild(cylinder);
+    }
+
+    function createSphereJoint(pt) {
+      const joint = document.createElement('a-sphere');
+      joint.setAttribute('position', `${pt.x} ${pt.y} ${pt.z}`);
+      joint.setAttribute('radius', currentRadius);
+      joint.setAttribute('color', currentColor);
+      drawingCanvas.appendChild(joint);
+    }
+
+    function checkUIInteraction(pos) {
+      const vec = new THREE.Vector3(pos.x, pos.y, pos.z);
+
+      swatches.forEach(swatch => {
+        const swatchPos = new THREE.Vector3();
+        swatch.object3D.getWorldPosition(swatchPos);
+        if (vec.distanceTo(swatchPos) < 0.16) {
+          currentColor = swatch.getAttribute('data-color');
+          brushTip.setAttribute('color', currentColor);
+          gazeTip.setAttribute('color', currentColor);
+        }
+      });
+
+      if (buttonCooldown) return;
+
+      const sizeBtnPos = new THREE.Vector3();
+      btnSize.object3D.getWorldPosition(sizeBtnPos);
+      if (vec.distanceTo(sizeBtnPos) < 0.24) {
+        triggerCooldown();
+        currentSizeIndex = (currentSizeIndex + 1) % brushSizes.length;
+        currentRadius = brushSizes[currentSizeIndex].radius;
+        brushTip.setAttribute('radius', currentRadius);
+        gazeTip.setAttribute('radius', currentRadius);
+        sizeLabel.setAttribute('value', `Кисть: ${brushSizes[currentSizeIndex].name}`);
+      }
+
+      const clearBtnPos = new THREE.Vector3();
+      btnClear.object3D.getWorldPosition(clearBtnPos);
+      if (vec.distanceTo(clearBtnPos) < 0.24) {
+        triggerCooldown();
+        drawingCanvas.innerHTML = '';
+      }
+    }
+
+    function triggerCooldown() {
+      buttonCooldown = true;
+      setTimeout(() => { buttonCooldown = false; }, 1000);
+    }
+  </script>
+</body>
+</html>
+
